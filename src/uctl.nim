@@ -1,11 +1,10 @@
 
-import ./uctl/util
+import ./uctl/[util, help]
 import std/cmdline
 from std/strutils import parseFloat, endsWith, formatFloat, FloatFormatMode
 
 proc exitWithHelp() =
-  loopAvailCmdsByIt:
-    echo it
+  priHelp()
   quit()
 
 proc chkErr(res: CmdExecRes) =

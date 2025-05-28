@@ -5,7 +5,8 @@ import std/paths
 from std/strutils import stripLineEnd, parseInt
 import std/critbits
 
-const SysClass = Path"/sys/class/"
+const SysClass* = Path"/sys/class/"
+export paths.`$`
 
 type
   Accessor = object
