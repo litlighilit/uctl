@@ -9,6 +9,7 @@ const SysClass = Path"/sys/class/"
 
 type
   Accessor = object
+    writable: bool
     root: Path
     nameCur, nameFull: string  ## subpath based on `root`
 
@@ -28,7 +29,9 @@ template genGet(attr){.dirty.} =
 genGet cur
 genGet full
 
+const NeverWriteErrMsg = "the value cannot be set"
 proc `cur=`*(self; val: int) =
+  assert self.writable, NeverWriteErrMsg
   var f = open($self.pathCur, fmWrite)
   f.write val
   f.close()
@@ -59,9 +62,11 @@ proc sysClassPath(pattern): Option[Path] =
   else:
     assert false, "multiply target dir in /sys/class found: " & $res
 
-proc newAccessor(root: Path, nameCur, nameFull: string): Accessor =
-  Accessor(root: root, nameCur: nameCur, nameFull: nameFull)
-template accPair(fullnameId; pattern: string, nameCur, nameFull): untyped{.dirty.} =
+proc newAccessor(root: Path, nameCur, nameFull: string, writable=true): Accessor =
+  Accessor(root: root, nameCur: nameCur, nameFull: nameFull, writable: writable)
+template accPair(fullnameId; pattern: string, nameCur, nameFull: string;
+    writable = true
+  ): untyped{.dirty.} =
   (
     astToStr(fullnameId)
     ,
@@ -70,13 +75,13 @@ template accPair(fullnameId; pattern: string, nameCur, nameFull): untyped{.dirty
       if opt.isNone:
         return
       let root = opt.unsafeGet
-      some newAccessor(root, nameCur, nameFull)
+      some newAccessor(root, nameCur, nameFull, writable)
   )
 
 
 let
   Key2AccGetter = toCritBitTree [
-    accPair(battery, "power_supply/BAT*",        "energy_now", "energy_full"),
+    accPair(battery, "power_supply/BAT*",        "energy_now", "energy_full", writable=false),
     accPair(brightness, "backlight/*_backlight", "brightness", "max_brightness"),
   ]
 
@@ -90,6 +95,7 @@ type
     csAmbig = "cmd is ambiguous"
     csUnavail = "cmd is unavailable on your platform"
     csUnknown = "unknown cmd is given"
+    csNeverSet = NeverWriteErrMsg
 
   CmdExecRes* = object
     case status*: CmdStatus
@@ -109,17 +115,21 @@ proc exec*(subcmd: string, val: float = DefVal): CmdExecRes =
   for (k, v) in Key2AccGetter.pairsWithPrefix subcmd:
     matches.add v
     matchesCmd.add k
+  template retStatus(st: CmdStatus) =
+    return CmdExecRes(status: st)
   case matches.len
   of 0:
-    return CmdExecRes(status: csUnknown)
+    retStatus csUnknown
   of 1:
     let opt = matches[0]()
     if opt.isNone:
-      return CmdExecRes(status: csUnavail)
+      retStatus csUnavail
     let acc = opt.unsafeGet
     if val.isDefVal:
       result.res = %acc
     else:
+      if not acc.writable:
+        retStatus csNeverSet
       result.res = val
       acc %= val
   else:
