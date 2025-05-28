@@ -10,7 +10,7 @@ proc exitWithHelp() =
 
 proc chkErr(res: CmdExecRes) =
   case res.status
-  of csUnavail, csUnknown, csNeverSet:
+  of csUnavail, csUnknown, csNeverSet, csPerm:
     quit $res.status
   of csAmbig:
     quit $res.status & ". Available matches: " & $res.matches

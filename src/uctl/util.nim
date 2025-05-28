@@ -31,9 +31,17 @@ genGet cur
 genGet full
 
 const NeverWriteErrMsg = "the value cannot be set"
+type
+  PermissionError* = object of OSError
+
+const PermErrMsg* = "No enough permission. you may need to rerun via `sudo` or root"
 proc `cur=`*(self; val: int) =
   assert self.writable, NeverWriteErrMsg
-  var f = open($self.pathCur, fmWrite)
+  var f: File
+  try:
+    f = open($self.pathCur, fmWrite)
+  except IOError:
+    raise newException(PermissionError, PermErrMsg)
   f.write val
   f.close()
 
@@ -97,6 +105,7 @@ type
     csUnavail = "cmd is unavailable on your platform"
     csUnknown = "unknown cmd is given"
     csNeverSet = NeverWriteErrMsg
+    csPerm = PermErrMsg
 
   CmdExecRes* = object
     case status*: CmdStatus
@@ -132,7 +141,10 @@ proc exec*(subcmd: string, val: float = DefVal): CmdExecRes =
       if not acc.writable:
         retStatus csNeverSet
       result.res = val
-      acc %= val
+      try:
+        acc %= val
+      except PermissionError:
+        retStatus csPerm
   else:
     return CmdExecRes(
       status: csAmbig,
