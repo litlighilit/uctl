@@ -57,13 +57,15 @@ proc `%`*(self): float =
   ## get percent
   self.cur / self.full
 
-using pattern: string
+using patterns: openArray[string]
 
-proc sysClassPath(pattern): Option[Path] =
-  let resPat = ($SysClass / pattern)
+proc sysClassPath(subdir: string, patterns): Option[Path] =
+  let resPatPre = ($SysClass / subdir)
   var res: seq[string]
-  for i in resPat.walkPattern:
-    res.add i
+  for pat in patterns:
+    let resPat = resPatPre / pat
+    for i in resPat.walkPattern:
+      res.add i
   case res.len
   of 0:
     return
@@ -74,14 +76,14 @@ proc sysClassPath(pattern): Option[Path] =
 
 proc newAccessor(root: Path, nameCur, nameFull: string, writable=true): Accessor =
   Accessor(root: root, nameCur: nameCur, nameFull: nameFull, writable: writable)
-template accPair(fullnameId; pattern: string, nameCur, nameFull: string;
+template accPair(fullnameId; subdir: string, patterns: openArray[string], nameCur, nameFull: string;
     writable = true
   ): untyped{.dirty.} =
   (
     astToStr(fullnameId)
     ,
     proc (): OptAcc =
-      let opt = sysClassPath(pattern)
+      let opt = sysClassPath(subdir, patterns)
       if opt.isNone:
         return
       let root = opt.unsafeGet
@@ -91,9 +93,10 @@ template accPair(fullnameId; pattern: string, nameCur, nameFull: string;
 
 let
   Key2AccGetter = toCritBitTree [
-    accPair(battery, "power_supply/BAT*","energy_now", "energy_full", writable=false),
-    accPair(brightness, "backlight/*",   "brightness", "max_brightness"),
-    # backlight/*: acpi_video for ATI's; intel_backlight for intel's
+    accPair(battery, "power_supply", ["BAT?", "battery"], "energy_now", "energy_full", writable=false),
+    # BAT1 for most laptops; BAT0 for some; battery for Android (no perm if non-root; contains multi-subdir)
+    accPair(brightness, "backlight", ["acpi_video", "*_backlight"],  "brightness", "max_brightness"),
+    # acpi_video for ATI's; intel_backlight for intel's
   ]
 template loopAvailCmdsByIt*(cb) =
   bind Key2AccGetter, keys
