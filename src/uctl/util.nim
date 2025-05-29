@@ -7,7 +7,10 @@ from std/strutils import stripLineEnd, parseInt
 import std/critbits
 
 const SysClass* = Path"/sys/class/"
-export paths.`$`
+when (NimMajor, NimMinor, NimPatch) > (2, 1, 1):
+  export paths.`$`
+else:
+  proc `$`*(p: Path): string {.inline.} = string(p)
 
 type
   Accessor = object
