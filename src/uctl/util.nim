@@ -1,4 +1,5 @@
 
+static:assert defined(linux), "This module is only for Linux platform"
 import std/options
 import std/os
 import std/paths
