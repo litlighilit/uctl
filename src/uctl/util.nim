@@ -91,10 +91,10 @@ template accPair(fullnameId; pattern: string, nameCur, nameFull: string;
 
 let
   Key2AccGetter = toCritBitTree [
-    accPair(battery, "power_supply/BAT*",        "energy_now", "energy_full", writable=false),
-    accPair(brightness, "backlight/*_backlight", "brightness", "max_brightness"),
+    accPair(battery, "power_supply/BAT*","energy_now", "energy_full", writable=false),
+    accPair(brightness, "backlight/*",   "brightness", "max_brightness"),
+    # backlight/*: acpi_video for ATI's; intel_backlight for intel's
   ]
-
 template loopAvailCmdsByIt*(cb) =
   bind Key2AccGetter, keys
   for it{.inject.} in Key2AccGetter.keys: cb
