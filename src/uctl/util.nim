@@ -3,7 +3,7 @@ static:assert defined(linux), "This module is only for Linux platform"
 import std/options
 import std/os
 import std/paths
-from std/strutils import stripLineEnd, parseInt
+from std/strutils import stripLineEnd, parseInt, parseFloat
 import std/critbits
 
 const SysClass* = Path"/sys/class/"
@@ -14,25 +14,26 @@ else:
 
 type
   Accessor = object
-    writable: bool
     root: Path
     nameCur, nameFull: string  ## subpath based on `root`
-
+    nameCurPercentFallback: string
   OptAcc = Option[Accessor]
 
+proc writable(self: Accessor): bool = self.nameCurPercentFallback == ""
 
-proc readInt(path: string): int =
+template read[T](t: typedesc[T]; path: string): T =
   var s = readFile(path)
   s.stripLineEnd
-  s.parseInt
+  `parse t` s
 
 using self: Accessor
-template genGet(attr){.dirty.} =
-  proc `path attr`(self): Path = self.root/Path(self.`name attr`)
-  proc attr*(self): int = readInt($self.`path attr`)
+template path(self: Accessor, attr: untyped): Path = self.root/Path(self.`name attr`)
+template genGet(attr; T=int){.dirty.} =
+  proc attr*(self): T = read(T, $self.path(attr))
 
 genGet cur
 genGet full
+genGet curPercentFallback, float
 
 const NeverWriteErrMsg = "the value cannot be set"
 type
@@ -43,7 +44,7 @@ proc `cur=`*(self; val: int) =
   assert self.writable, NeverWriteErrMsg
   var f: File
   try:
-    f = open($self.pathCur, fmWrite)
+    f = open($self.path(cur), fmWrite)
   except IOError:
     raise newException(PermissionError, PermErrMsg)
   f.write val
@@ -58,7 +59,10 @@ proc `%=`*(self; per: float) =
 
 proc `%`*(self): float =
   ## get percent
-  self.cur / self.full
+  try:
+    self.cur / self.full
+  except IOError:
+    self.curPercentFallback / 100
 
 using patterns: openArray[string]
 
@@ -75,12 +79,12 @@ proc sysClassPath(subdir: string, patterns): Option[Path] =
   of 1:
     result = some(Path(res[0]))
   else:
-    assert false, "multiply target dir in /sys/class found: " & $res
+    assert false, "multiply target dir in " & $SysClass & " found: " & $res
 
-proc newAccessor(root: Path, nameCur, nameFull: string, writable=true): Accessor =
-  Accessor(root: root, nameCur: nameCur, nameFull: nameFull, writable: writable)
+proc newAccessor(root: Path, nameCur, nameFull: string, nameCurPercentFallback=""): Accessor =
+  Accessor(root: root, nameCur: nameCur, nameFull: nameFull, nameCurPercentFallback: nameCurPercentFallback)
 template accPair(fullnameId; subdir: string, patterns: openArray[string], nameCur, nameFull: string;
-    writable = true
+    fallback = ""
   ): untyped{.dirty.} =
   (
     astToStr(fullnameId)
@@ -90,14 +94,14 @@ template accPair(fullnameId; subdir: string, patterns: openArray[string], nameCu
       if opt.isNone:
         return
       let root = opt.unsafeGet
-      some newAccessor(root, nameCur, nameFull, writable)
+      some newAccessor(root, nameCur, nameFull, fallback)
   )
 
 
 let
   Key2AccGetter = toCritBitTree [
-    accPair(battery, "power_supply", ["BAT?", "battery"], "energy_now", "energy_full", writable=false),
-    # BAT1 for most laptops; BAT0 for some; battery for Android (no perm if non-root; contains multi-subdir)
+    accPair(battery, "power_supply", ["BAT?", "battery"], "energy_now", "energy_full", fallback="capacity"),
+    # BAT1 for most laptops; BAT0 for some; battery for Android (no perm if non-root; contains multi-subdir; has only `capacity`)
     accPair(brightness, "backlight", ["acpi_video", "*_backlight"],  "brightness", "max_brightness"),
     # acpi_video for ATI's; intel_backlight for intel's
   ]
