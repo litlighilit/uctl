@@ -1,8 +1,7 @@
 
-import ./uctl/[util, help]
+import ./uctl/[util, help, units]
 import std/cmdline
-from std/strutils import parseFloat, startsWith, endsWith, formatFloat, FloatFormatMode
-from std/parseutils import parseFloat
+from std/strutils import formatFloat, FloatFormatMode
 
 proc exitWithHelp() =
   priHelp()
@@ -17,37 +16,21 @@ proc chkErr(res: CmdExecRes) =
   of csSucc:
     discard
 
-proc query(subCmd: string): float =
-  let res = exec(subCmd)
-  res.chkErr
-  res.res
-
-proc parseMayPercent(sval: string): float =
-  if sval.endsWith '%':
-    let n = parseFloat(sval.toOpenArray(0, sval.len-2), result)
-    if n == 0:
-      #raise newException(ValueError,
-      quit(
-        "bad argument, expect a float (may suffixed with `%`), but got " & sval
-      )
-    result / 100
-  else:
-    parseFloat sval
-
 when isMainModule:
   let argn = paramCount()
   if argn == 0:
     exitWithHelp()
   let subCmd = paramStr(1)
+  proc query(): float =
+    let res = exec(subCmd)
+    res.chkErr
+    res.res
   if subCmd in ["-h", "--help", "-?"]:
     exitWithHelp()
   if argn == 2:
     var sval = paramStr(2)
-    let rel = sval[0] in "+-"
-    var val = sval.parseMayPercent
-    if rel:
-      val += subCmd.query
+    let val = parseUnit(sval, query)
     let res = exec(subCmd, val)
     res.chkErr
   else:  # argn == 1
-    echo (subCmd.query * 100).formatFloat(ffDecimal, 1) & "%"
+    echo (query() * 100).formatFloat(ffDecimal, 1) & "%"
