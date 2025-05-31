@@ -5,6 +5,7 @@ import std/os
 import std/paths
 from std/strutils import stripLineEnd, parseInt, parseFloat
 import std/critbits
+import std/macros
 
 const SysClass* = Path"/sys/class/"
 when (NimMajor, NimMinor, NimPatch) > (2, 1, 1):
@@ -13,27 +14,46 @@ else:
   proc `$`*(p: Path): string {.inline.} = string(p)
 
 type
-  Accessor = object
+  Accessor = ref object of RootObj
+    writable: bool
+
+  PathAccessor = ref object of Accessor
     root: Path
     nameCur, nameFull: string  ## subpath based on `root`
+  PathFbAccessor = ref object of PathAccessor
     nameCurPercentFallback: string
-  OptAcc = Option[Accessor]
+  
 
-proc writable(self: Accessor): bool = self.nameCurPercentFallback == ""
+template notImpl = doAssert false, "not implemented"
+template emptyn: NimNode = newEmptyNode()
+macro parNotImpl(def) =
+  result = newStmtList()
+  var
+    parParams = def.params.copyNimTree
+    parPragmas = def.pragma.copyNimTree
+  parParams[1][1] = bindSym"Accessor"
+  let parName = def[0]
+  var parImpl = def.kind.newTree(
+    parName, emptyn, emptyn,
+    parParams, parPragmas, emptyn, bindSym"notImpl")
+  parImpl.addPragma ident"base"
+  result.add parImpl
+  result.add def
 
 template read[T](t: typedesc[T]; path: string): T =
   var s = readFile(path)
   s.stripLineEnd
   `parse t` s
 
-using self: Accessor
-template path(self: Accessor, attr: untyped): Path = self.root/Path(self.`name attr`)
-template genGet(attr; T=int){.dirty.} =
-  proc attr*(self): T = read(T, $self.path(attr))
+using self: PathAccessor
+
+template path[T: PathAccessor](self: T, attr: untyped): Path = self.root/Path(self.`name attr`)
+template genGet(attr; T=int, Self=PathAccessor){.dirty.} =
+  proc attr*(self: Self): T = read(T, $self.path(attr))
 
 genGet cur
 genGet full
-genGet curPercentFallback, float
+genGet curPercentFallback, float, PathFbAccessor
 
 const NeverWriteErrMsg = "the value cannot be set"
 type
@@ -50,17 +70,18 @@ proc `cur=`*(self; val: int) =
   f.write val
   f.close()
 
-proc `%=`*(self; per: float) =
+method `%=`*(self; per: float){.parNotImpl.} =
   ## set by percent,
   ## 
   ## Does nothing with `mod` !
   let v = int(per * float self.full)
   self.cur = v
 
-proc `%`*(self): float =
+method `%`*(self): float{.parNotImpl.} = self.cur / self.full
+method `%`*(self: PathFbAccessor): float =
   ## get percent
   try:
-    self.cur / self.full
+    procCall(%PathAccessor(self))
   except IOError:
     self.curPercentFallback / 100
 
@@ -81,22 +102,44 @@ proc sysClassPath(subdir: string, patterns): Option[Path] =
   else:
     assert false, "multiply target dir in " & $SysClass & " found: " & $res
 
-proc newAccessor(root: Path, nameCur, nameFull: string, nameCurPercentFallback=""): Accessor =
-  Accessor(root: root, nameCur: nameCur, nameFull: nameFull, nameCurPercentFallback: nameCurPercentFallback)
-template accPair(fullnameId; subdir: string, patterns: openArray[string], nameCur, nameFull: string;
-    fallback = ""
-  ): untyped{.dirty.} =
-  (
-    astToStr(fullnameId)
-    ,
-    proc (): OptAcc =
-      let opt = sysClassPath(subdir, patterns)
-      if opt.isNone:
-        return
-      let root = opt.unsafeGet
-      some newAccessor(root, nameCur, nameFull, fallback)
-  )
+proc newPathAccessor(root: Path, nameCur, nameFull: string): Accessor =
+  PathAccessor(root: root, nameCur: nameCur, nameFull: nameFull, writable: true)
+proc newPathAccessor(root: Path, nameCur, nameFull, nameCurPercentFallback: string): Accessor =
+  assert nameCurPercentFallback != ""
+  PathFbAccessor(root: root, nameCur: nameCur, nameFull: nameFull, nameCurPercentFallback: nameCurPercentFallback)
 
+macro genAccPair(args: untyped, prcBody: untyped) =
+  let untyp = ident"untyped"
+  var params = @[untyp]
+  let arg1 = ident"fullnameId"
+  params.add newIdentDefs(arg1, untyp)
+  for def in args:
+    params.add:
+      case def.kind
+      of nnkExprColonExpr: newIdentDefs(def[0], def[1])
+      of nnkIdent: newIdentDefs(def, untyp)
+      else: raise newException(ValueError, "expect ident or ident: type, but got " & $def.kind)
+  let body = nnkTupleConstr.newTree(
+    newCall(bindSym"astToStr", arg1),
+    newProc(params=[bindSym"Accessor"], body=prcBody)
+  )
+  result = newProc(ident"accPair", params, body, procType=nnkTemplateDef)
+  result.addPragma ident"dirty"
+  # template accPair(fullnameId; *<args>){.dirty.} = (astToStr(fullnameId), proc (): Accessor = <prcBody>)
+
+template genSysClassPathGetter(root; subdir, patterns) =
+  let opt = sysClassPath(subdir, patterns)
+  if opt.isNone:
+    return  # this exit the callee function
+  let root = opt.unsafeGet
+
+genAccPair (subdir: string, patterns: openArray[string], nameCur, nameFull, fallback: string):
+  genSysClassPathGetter(root, subdir, patterns)
+  newPathAccessor(root, nameCur, nameFull, fallback)
+
+genAccPair (subdir: string, patterns: openArray[string], nameCur, nameFull: string):
+  genSysClassPathGetter(root, subdir, patterns)
+  newPathAccessor(root, nameCur, nameFull)
 
 let
   Key2AccGetter = toCritBitTree [
@@ -143,9 +186,9 @@ proc exec*(subcmd: string, val: float = DefVal): CmdExecRes =
     retStatus csUnknown
   of 1:
     let opt = matches[0]()
-    if opt.isNone:
+    if opt.isNil:
       retStatus csUnavail
-    let acc = opt.unsafeGet
+    let acc = opt
     if val.isDefVal:
       result.res = %acc
     else:
