@@ -1,7 +1,6 @@
 
-import ./uctl/[util, help, units]
+import ./uctl/[util, help]
 import std/cmdline
-from std/strutils import formatFloat, FloatFormatMode
 
 proc exitWithHelp() =
   priHelp()
@@ -21,16 +20,15 @@ when isMainModule:
   if argn == 0:
     exitWithHelp()
   let subCmd = paramStr(1)
-  proc query(): float =
+  proc query(): string =
     let res = exec(subCmd)
     res.chkErr
     res.res
   if subCmd in ["-h", "--help", "-?"]:
     exitWithHelp()
   if argn == 2:
-    var sval = paramStr(2)
-    let val = parseUnit(sval, query)
-    let res = exec(subCmd, val)
+    let sval = paramStr(2)
+    let res = exec(subCmd, sval)
     res.chkErr
   else:  # argn == 1
-    echo (query() * 100).formatFloat(ffDecimal, 1) & "%"
+    echo query()

@@ -2,10 +2,15 @@
 static:assert defined(linux), "This module is only for Linux platform"
 import std/options
 import std/os
+import std/osproc
 import std/paths
-from std/strutils import stripLineEnd, parseInt, parseFloat
+from std/strutils import stripLineEnd, parseInt, parseFloat,
+  formatFloat, FloatFormatMode,
+  rsplit
 import std/critbits
 import std/macros
+
+import ./units
 
 const SysClass* = Path"/sys/class/"
 when (NimMajor, NimMinor, NimPatch) > (2, 1, 1):
@@ -19,10 +24,13 @@ type
 
   PathAccessor = ref object of Accessor
     root: Path
-    nameCur, nameFull: string  ## subpath based on `root`
+    nameCur, nameFull: string ## subpath based on `root`
   PathFbAccessor = ref object of PathAccessor
     nameCurPercentFallback: string
   
+  CmdAccessor = ref object of Accessor
+    getCmd: proc (): string
+    setCmd: proc (val: string)
 
 template notImpl = doAssert false, "not implemented"
 template emptyn: NimNode = newEmptyNode()
@@ -70,20 +78,30 @@ proc `cur=`*(self; val: int) =
   f.write val
   f.close()
 
-method `%=`*(self; per: float){.parNotImpl.} =
+method `%=`*(self; per: float){.base.} =
   ## set by percent,
   ## 
   ## Does nothing with `mod` !
   let v = int(per * float self.full)
   self.cur = v
 
-method `%`*(self): float{.parNotImpl.} = self.cur / self.full
+method `%`*(self): float{.base.} = self.cur / self.full
 method `%`*(self: PathFbAccessor): float =
   ## get percent
   try:
     procCall(%PathAccessor(self))
   except IOError:
     self.curPercentFallback / 100
+
+method `$$`*(self): string {.parNotImpl.} =
+  (%self * 100).formatFloat(ffDecimal, 1) & "%"
+
+method `$$=`*(self; sval: string) {.parNotImpl.} =
+  let val = parseUnit(sval, proc (): float = %self)
+  self %= val
+
+method `$$`*(self: CmdAccessor): string = self.getCmd()
+method `$$=`*(self: CmdAccessor; sval: string) = self.setCmd(sval)
 
 using patterns: openArray[string]
 
@@ -141,12 +159,39 @@ genAccPair (subdir: string, patterns: openArray[string], nameCur, nameFull: stri
   genSysClassPathGetter(root, subdir, patterns)
   newPathAccessor(root, nameCur, nameFull)
 
+proc chkExec(cmd: string): string =
+  let tup = execCmdEx(cmd)
+  if tup.exitCode != 0:
+    raise newException(OSError, cmd.repr & " failed: " & $tup)
+  result = tup.output
+
+proc getFontSizeRepr: string =
+  result = chkExec("showconsolefont --info")
+  result.stripLineEnd
+  # in form of `ROWSxCOLSxCOUNT`
+  # We strip `xCOUNT` part
+  result = result.rsplit('x', 1)[0]
+
+proc setFontSize(sval: string) =
+  if sval == "x2":
+    discard chkExec("setfont -d")
+  else:
+    notImpl()
+
+genAccPair (getCmdt, setCmdt):
+  CmdAccessor(
+    getCmd: getCmdt,
+    setCmd: setCmdt,
+    writable: true
+  )
+
 let
   Key2AccGetter = toCritBitTree [
     accPair(battery, "power_supply", ["BAT?", "battery"], "energy_now", "energy_full", fallback="capacity"),
     # BAT1 for most laptops; BAT0 for some; battery for Android (no perm if non-root; contains multi-subdir; has only `capacity`)
     accPair(brightness, "backlight", ["acpi_video", "*_backlight"],  "brightness", "max_brightness"),
     # acpi_video for ATI's; intel_backlight for intel's
+    accPair(font, getFontSizeRepr, setFontSize)
   ]
 template loopAvailCmdsByIt*(cb) =
   bind Key2AccGetter, keys
@@ -164,16 +209,16 @@ type
   CmdExecRes* = object
     case status*: CmdStatus
     of csSucc:
-      res*: float
+      res*: string
     of csAmbig:
       matches*: seq[string]
     else:
       discard
 
-const DefVal = NaN
-proc isDefVal(f: float): bool = f != f
+const DefVal = ""
+proc isDefVal(f: string): bool = f == ""
 
-proc exec*(subcmd: string, val: float = DefVal): CmdExecRes =
+proc exec*(subcmd: string, val = DefVal, flags: openArray[string]=[]): CmdExecRes =
   var matches: seq[typeof(Key2AccGetter[""])]
   var matchesCmd: seq[string]
   for (k, v) in Key2AccGetter.pairsWithPrefix subcmd:
@@ -190,13 +235,13 @@ proc exec*(subcmd: string, val: float = DefVal): CmdExecRes =
       retStatus csUnavail
     let acc = opt
     if val.isDefVal:
-      result.res = %acc
+      result.res = $$acc
     else:
       if not acc.writable:
         retStatus csNeverSet
       result.res = val
       try:
-        acc %= val
+        acc $$= val
       except PermissionError:
         retStatus csPerm
   else:
